@@ -1,0 +1,24 @@
+[project]
+name = "kelly"
+version = "0.1.0"
+description = "Your calendar in Claude's context — a local MCP server for CalDAV."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=3.4.4",
+    "icalendar>=6.3.2",
+    "keyring>=25.0.0",
+    "requests>=2.32.5",
+]
+
+[project.scripts]
+kelly = "kelly.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
