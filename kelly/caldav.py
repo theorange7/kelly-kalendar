@@ -78,12 +78,61 @@ def _serialize_dt(value) -> str:
     return str(value)
 
 
+def _to_utc(value) -> datetime | None:
+    """Normalize a VEVENT date/datetime to an aware UTC datetime for windowing.
+
+    A bare date (all-day) becomes UTC midnight; a naive datetime is assumed UTC.
+    """
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+    return None
+
+
+def _email(value) -> str:
+    """Strip a leading mailto: (case-insensitive) from a CalDAV address value."""
+    s = str(value).strip()
+    return s[7:] if s.lower().startswith("mailto:") else s
+
+
+def _parse_person(value) -> dict | None:
+    """Normalize an ORGANIZER/ATTENDEE address into {name, email[, status, role]}.
+
+    CN → name, PARTSTAT → status (accepted/declined/tentative/needs-action),
+    ROLE → role (req/opt participant). status/role are only present on ATTENDEEs.
+    """
+    if value is None:
+        return None
+    params = getattr(value, "params", {}) or {}
+    person = {
+        "name": str(params["CN"]) if "CN" in params else None,
+        "email": _email(value),
+    }
+    if "PARTSTAT" in params:
+        person["status"] = str(params["PARTSTAT"])
+    if "ROLE" in params:
+        person["role"] = str(params["ROLE"])
+    return person
+
+
+def _parse_attendees(component) -> list[dict]:
+    """Extract the ATTENDEE list from a VEVENT (single or repeated property)."""
+    raw = component.get("attendee")
+    if raw is None:
+        return []
+    items = raw if isinstance(raw, list) else [raw]
+    return [p for p in (_parse_person(a) for a in items) if p is not None]
+
+
 def fetch_events(session: requests.Session, calendar_url: str, start: datetime, end: datetime) -> list[dict]:
     body = f"""<?xml version="1.0" encoding="utf-8" ?>
 <c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
   <d:prop>
     <d:getetag/>
-    <c:calendar-data/>
+    <c:calendar-data>
+      <c:expand start="{_fmt(start)}" end="{_fmt(end)}"/>
+    </c:calendar-data>
   </d:prop>
   <c:filter>
     <c:comp-filter name="VCALENDAR">
@@ -108,13 +157,27 @@ def fetch_events(session: requests.Session, calendar_url: str, start: datetime, 
         for component in cal.walk("VEVENT"):
             dtstart = component.get("dtstart")
             dtend = component.get("dtend")
+            # Defensive window clamp: <c:expand> above asks the server to expand
+            # recurrences into in-window instances, but a server that ignores it
+            # returns recurrence overrides outside the window (their real dates).
+            # Drop anything that doesn't overlap [start, end] so `days` is always
+            # honored regardless of server behavior.
+            ev_start = _to_utc(dtstart.dt) if dtstart else None
+            ev_end = _to_utc(dtend.dt) if dtend else None
+            if ev_start is not None and ev_start >= end:
+                continue
+            if ev_end is not None and ev_end <= start:
+                continue
             events.append({
                 "uid": str(component.get("uid", "")),
                 "summary": str(component.get("summary", "")),
                 "location": str(component.get("location", "")),
+                "description": str(component.get("description", "")),
                 "start": _serialize_dt(dtstart.dt) if dtstart else None,
                 "end": _serialize_dt(dtend.dt) if dtend else None,
                 "all_day": isinstance(dtstart.dt, date) and not isinstance(dtstart.dt, datetime) if dtstart else False,
+                "organizer": _parse_person(component.get("organizer")),
+                "attendees": _parse_attendees(component),
             })
     return events
 
