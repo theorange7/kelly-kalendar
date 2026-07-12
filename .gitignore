@@ -17,3 +17,9 @@ wheels/
 
 # OS
 .DS_Store
+
+# NanoClaw host-bridge bearer token — never commit
+.kelly_http_token
+
+# Machine-specific launchd unit (hardcoded install paths) — not portable
+com.nanoclaw.kelly.plist
