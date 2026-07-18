@@ -5,6 +5,7 @@ description = "Your calendar in Claude's context — a local MCP server for CalD
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "defusedxml>=0.7.1",
     "fastmcp>=3.4.4",
     "icalendar>=6.3.2",
     "keyring>=25.0.0",

@@ -327,3 +327,36 @@ class TestGetEvents:
                     "pass",
                     calendar_filter="nonexistent",
                 )
+
+    def test_huge_days_is_clamped_not_overflowed(self):
+        """A pathological `days` must be clamped, never raise OverflowError."""
+        home_response = _mock_session_response(207, PROPFIND_HOME_RESPONSE)
+        cal_response = _mock_session_response(207, PROPFIND_CALENDARS_RESPONSE)
+        events_response = _mock_session_response(
+            207, _report_response_at(datetime.now(timezone.utc) + timedelta(hours=1))
+        )
+        session = MagicMock()
+        session.request.side_effect = [home_response, cal_response, events_response]
+
+        with patch("kelly.caldav.requests.Session", return_value=session):
+            events = get_events(
+                "https://caldav.example.com/principals/user123/",
+                "user",
+                "pass",
+                days=10**12,
+                calendar_filter="Work",
+            )
+        assert isinstance(events, list)
+
+    def test_non_integer_days_rejected(self):
+        home_response = _mock_session_response(207, PROPFIND_HOME_RESPONSE)
+        session = MagicMock()
+        session.request.side_effect = [home_response]
+        with patch("kelly.caldav.requests.Session", return_value=session):
+            with pytest.raises(CalDavError, match="must be an integer"):
+                get_events(
+                    "https://caldav.example.com/principals/user123/",
+                    "user",
+                    "pass",
+                    days="lots",  # type: ignore[arg-type]
+                )
