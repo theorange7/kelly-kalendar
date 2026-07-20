@@ -17,11 +17,20 @@ Config via env:
   KELLY_HTTP_TOKEN  required bearer token  (if set, requests without a matching
                     `Authorization: Bearer <token>` get 401). Isolates this
                     server to the one agent group whose config carries the token.
+
+The bridge fails closed: with no token (env unset and `.kelly_http_token`
+missing/empty) it refuses to start, so a misconfiguration can't silently expose
+the calendar to every local container. Set KELLY_HTTP_ALLOW_NO_AUTH=1 to run
+without auth deliberately (not recommended — `allowed_hosts` includes
+host.docker.internal, so any container/process on loopback could then read it).
 """
 
 from __future__ import annotations
 
+import hmac
 import os
+import stat
+import sys
 
 import uvicorn
 
@@ -43,6 +52,13 @@ def _load_token() -> str | None:
         return tok.strip()
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".kelly_http_token")
     try:
+        st = os.stat(path)
+        if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            print(
+                f"WARNING: {path} is group/other-accessible; other local users can "
+                "read the bridge token. Run: chmod 600 .kelly_http_token",
+                file=sys.stderr,
+            )
         with open(path) as fh:
             return fh.read().strip() or None
     except OSError:
@@ -66,7 +82,9 @@ def _bearer_gate(app, token: str):
     async def wrapped(scope, receive, send):
         if scope.get("type") == "http":
             headers = dict(scope.get("headers") or [])
-            if headers.get(b"authorization") != expected:
+            presented = headers.get(b"authorization") or b""
+            # Constant-time compare so the token can't be recovered by timing.
+            if not hmac.compare_digest(presented, expected):
                 await send(
                     {
                         "type": "http.response.start",
@@ -101,6 +119,22 @@ def main() -> None:
 
     if TOKEN:
         app = _bearer_gate(app, TOKEN)
+    elif os.environ.get("KELLY_HTTP_ALLOW_NO_AUTH") == "1":
+        # Explicit, deliberate opt-out. allowed_hosts still includes
+        # host.docker.internal, so this exposes the calendar to every container
+        # and local process that can reach loopback — only for trusted setups.
+        print(
+            "WARNING: starting with NO authentication (KELLY_HTTP_ALLOW_NO_AUTH=1). "
+            "Any local process or container can read your calendar.",
+            file=sys.stderr,
+        )
+    else:
+        # Fail closed: refusing to serve calendar data unauthenticated.
+        sys.exit(
+            "ERROR: no bridge token configured. Set KELLY_HTTP_TOKEN or create "
+            ".kelly_http_token (see NANOCLAW.md), or set KELLY_HTTP_ALLOW_NO_AUTH=1 "
+            "to intentionally run without authentication."
+        )
 
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")
 

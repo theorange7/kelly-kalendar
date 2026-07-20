@@ -36,6 +36,17 @@ def _get_credentials() -> tuple[str, str, str]:
         sys.exit(1)
 
 
+def _client_error(context: str, exc: Exception) -> str:
+    """Log full error detail host-side; return a generic message to the client.
+
+    Detailed CalDAV/HTTP errors can carry server response bodies and the
+    principal URL — fine in host-side logs, but they should not cross the trust
+    boundary into a lower-trust agent's context.
+    """
+    print(f"kelly: {context}: {exc!r}", file=sys.stderr)
+    return f"{context} failed — see the Kelly host logs for details."
+
+
 @mcp.tool
 def check_connection() -> dict:
     """Verify that CalDAV credentials are configured and the server is reachable."""
@@ -46,10 +57,9 @@ def check_connection() -> dict:
         home_set_url = discover_calendar_home(session, principal_url)
         calendars = _discover_calendars(session, home_set_url)
     except (CalDavError, requests.RequestException) as e:
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": _client_error("check_connection", e)}
     return {
         "status": "ok",
-        "principal": principal_url,
         "calendars": len(calendars),
     }
 
@@ -64,7 +74,7 @@ def list_calendars() -> list[dict]:
         home_set_url = discover_calendar_home(session, principal_url)
         calendars = _discover_calendars(session, home_set_url)
     except (CalDavError, requests.RequestException) as e:
-        return [{"error": str(e)}]
+        return [{"error": _client_error("list_calendars", e)}]
     return [{"name": c["name"]} for c in calendars]
 
 
@@ -86,8 +96,8 @@ def list_upcoming_events(days: int = 7, calendar: Optional[str] = None) -> list[
             days=days,
             calendar_filter=calendar,
         )
-    except (CalDavError, requests.RequestException) as e:
-        return [{"error": str(e)}]
+    except (CalDavError, requests.RequestException, ValueError, OverflowError) as e:
+        return [{"error": _client_error("list_upcoming_events", e)}]
     return events
 
 

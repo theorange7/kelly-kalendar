@@ -99,10 +99,15 @@ The agent group's container config registers Kelly as:
 Assumes this repo is cloned locally and CalDAV credentials are stored (macOS
 keychain via `kelly setup`, or `CALDAV_*` env fallback).
 
-1. **Generate a bearer token** into the gitignored file the launcher reads:
+1. **Generate a bearer token** into the gitignored file the launcher reads,
+   and lock down its permissions so other local users can't read it:
    ```bash
-   openssl rand -hex 32 > .kelly_http_token
+   ( umask 077 && openssl rand -hex 32 > .kelly_http_token )
+   chmod 600 .kelly_http_token
    ```
+   The bridge **fails closed**: without a token it refuses to start rather than
+   silently serving your calendar unauthenticated. (To run without auth on a
+   fully trusted single-user host, set `KELLY_HTTP_ALLOW_NO_AUTH=1`.)
 2. **Run the bridge** (loopback HTTP MCP on :8787):
    ```bash
    uv run python serve_http.py
@@ -131,6 +136,10 @@ keychain via `kelly setup`, or `CALDAV_*` env fallback).
   the NanoClaw side (see the table above).
 - **Loopback binding only.** Keep `KELLY_HTTP_HOST=127.0.0.1`. Binding to
   `0.0.0.0` would expose your calendar to the LAN.
+- **Untrusted event content.** Event titles/descriptions come from anyone who
+  can invite you and flow verbatim into the agent's context — treat them as
+  untrusted input, and don't pair Kelly with an egress/write capability in the
+  same agent unless that agent is network-sandboxed (see `THREAT-MODEL.md`, F-01).
 - **Read-only.** Kelly exposes three tools and never writes to the calendar:
   `check_connection`, `list_calendars`, `list_upcoming_events`.
 

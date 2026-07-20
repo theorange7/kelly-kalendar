@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urljoin
 
 import requests
+from defusedxml import ElementTree as ET
 from icalendar import Calendar
 from requests.auth import HTTPDigestAuth
 
@@ -14,6 +14,21 @@ NS = {
     "d": "DAV:",
     "cal": "urn:ietf:params:xml:ns:caldav",
 }
+
+# Free-text event fields are attacker-influenceable (anyone who can send an
+# invite controls them) and flow into the model's context. Cap their length to
+# bound both prompt-injection payload size and context bloat / parser stress.
+MAX_TEXT_FIELD = 2000
+
+# Upper bound on the look-ahead window (~10 years) to avoid timedelta overflow
+# and runaway recurrence expansion on the CalDAV server.
+MAX_DAYS = 3650
+
+
+def _text(component, key: str) -> str:
+    """Coerce a VEVENT text property to a bounded plain string."""
+    s = str(component.get(key, ""))
+    return s if len(s) <= MAX_TEXT_FIELD else s[:MAX_TEXT_FIELD] + "…[truncated]"
 
 
 class CalDavError(RuntimeError):
@@ -170,9 +185,9 @@ def fetch_events(session: requests.Session, calendar_url: str, start: datetime, 
                 continue
             events.append({
                 "uid": str(component.get("uid", "")),
-                "summary": str(component.get("summary", "")),
-                "location": str(component.get("location", "")),
-                "description": str(component.get("description", "")),
+                "summary": _text(component, "summary"),
+                "location": _text(component, "location"),
+                "description": _text(component, "description"),
                 "start": _serialize_dt(dtstart.dt) if dtstart else None,
                 "end": _serialize_dt(dtend.dt) if dtend else None,
                 "all_day": isinstance(dtstart.dt, date) and not isinstance(dtstart.dt, datetime) if dtstart else False,
@@ -193,6 +208,15 @@ def get_events(
     Fetch upcoming events across all matching calendars.
     Returns a flat, sorted list of event dicts.
     """
+    # Clamp the window: `days` is model-chosen (and can be influenced by injected
+    # event content). Reject nonsensical values and prevent a huge value from
+    # overflowing timedelta (crash) or amplifying server-side recurrence expansion.
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        raise CalDavError("`days` must be an integer between 1 and 3650")
+    days = max(1, min(days, MAX_DAYS))
+
     session = requests.Session()
     session.auth = HTTPDigestAuth(username, password)
 

@@ -26,7 +26,9 @@ class TestCheckConnection:
                 result = check_connection()
 
         assert result["status"] == "error"
-        assert "connection refused" in result["message"]
+        # Generic message to the client; raw CalDAV detail stays host-side (F-08).
+        assert "check_connection" in result["message"]
+        assert "connection refused" not in result["message"]
 
 
 class TestListCalendars:
@@ -59,4 +61,16 @@ class TestListUpcomingEvents:
                 from kelly.server import list_upcoming_events
                 result = list_upcoming_events()
 
-        assert result == [{"error": "timeout"}]
+        # Generic, non-leaking message is returned to the client (F-08); the raw
+        # CalDAV detail ("timeout") must not cross into the model's context.
+        assert len(result) == 1
+        assert "list_upcoming_events" in result[0]["error"]
+        assert "timeout" not in result[0]["error"]
+
+    def test_overflow_is_caught(self):
+        with patch("kelly.server.load_credentials", return_value=MOCK_CREDS):
+            with patch("kelly.server.get_events", side_effect=OverflowError("too big")):
+                from kelly.server import list_upcoming_events
+                result = list_upcoming_events(days=10**12)
+
+        assert len(result) == 1 and "error" in result[0]
